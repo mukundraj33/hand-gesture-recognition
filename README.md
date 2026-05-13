@@ -1,8 +1,9 @@
 ---
 title: Hand Gesture Recognition
+<<<<<<< HEAD
 sdk: gradio
 app_file: app.py
-python_version: 3.12
+python_version: 3.10
 ---
 
 # Hand Gesture Recognition System
@@ -136,3 +137,18 @@ weighted avg       0.94      0.93      0.93      1711
   Add sign language to text/speech conversion
 - **Gesture Security**  
   Develop authentication systems using unique gesture patterns
+=======
+emoji: 🏆
+colorFrom: yellow
+colorTo: indigo
+sdk: gradio
+sdk_version: 6.14.0
+python_version: '3.13'
+app_file: app.py
+pinned: false
+license: mit
+short_description: Classification of live hand gesture
+---
+
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+>>>>>>> 74c6d14e08be7c0b8fa9b4c6da33f32f4c64c5b3
