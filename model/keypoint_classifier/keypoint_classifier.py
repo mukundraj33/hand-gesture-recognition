@@ -8,7 +8,7 @@ class KeyPointClassifier:
     def __call__(self, landmark_list):
         # Ensure input is in the right shape (batch size, input length)
         input_array = np.array([landmark_list], dtype=np.float32)
-        predictions = self.model.predict(input_array)
+        predictions = self.model.predict(input_array, verbose=0)
         result_index = np.argmax(predictions[0])
         return result_index
 

@@ -1,3 +1,10 @@
+---
+title: Hand Gesture Recognition
+sdk: gradio
+app_file: app.py
+python_version: 3.12
+---
+
 # Hand Gesture Recognition System
 
 ## Project Overview
