@@ -2,7 +2,7 @@
 title: Hand Gesture Recognition
 sdk: gradio
 app_file: app.py
-python_version: 3.10
+python_version: "3.10"
 ---
 
 # Hand Gesture Recognition System
