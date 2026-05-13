@@ -1,13 +1,20 @@
 import gradio as gr
 
-from utils.pipeline import GestureRecognitionPipeline
+
+pipeline = None
 
 
-pipeline = GestureRecognitionPipeline()
+def get_pipeline():
+    global pipeline
+    if pipeline is None:
+        from utils.pipeline import GestureRecognitionPipeline
+
+        pipeline = GestureRecognitionPipeline()
+    return pipeline
 
 
 def recognize_gesture(image):
-    annotated_image, prediction = pipeline.predict(image)
+    annotated_image, prediction = get_pipeline().predict(image)
     return annotated_image, prediction
 
 
