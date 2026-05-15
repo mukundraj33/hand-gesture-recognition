@@ -1,4 +1,5 @@
 import copy
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -14,6 +15,33 @@ from utils.preprocessing import (
 )
 
 
+@dataclass(frozen=True)
+class GesturePrediction:
+    handedness: str
+    label: str
+    confidence: float
+    probabilities: tuple
+
+    @property
+    def display_text(self):
+        return f"{self.handedness}: {self.label} ({self.confidence:.1%})"
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    image: np.ndarray
+    predictions: tuple
+    message: str
+
+    @property
+    def primary_prediction(self):
+        return self.predictions[0] if self.predictions else None
+
+    @property
+    def has_hand(self):
+        return bool(self.predictions)
+
+
 class GestureRecognitionPipeline:
     def __init__(self, model_path=MODEL_PATH, label_path=LABEL_PATH):
         self.detector = HandDetector()
@@ -21,8 +49,12 @@ class GestureRecognitionPipeline:
         self.labels = load_labels(label_path)
 
     def predict(self, image):
+        result = self.process(image)
+        return result.image, result.message
+
+    def process(self, image):
         if image is None:
-            return None, "No image received"
+            return PipelineResult(None, (), "No image received")
 
         rgb_image = self._ensure_rgb_uint8(image)
         debug_image = copy.deepcopy(rgb_image)
@@ -32,7 +64,7 @@ class GestureRecognitionPipeline:
         process_image.flags.writeable = True
 
         if not results.multi_hand_landmarks:
-            return debug_image, "No hand detected"
+            return PipelineResult(debug_image, (), "No hand detected")
 
         predictions = []
         for hand_landmarks, handedness in zip(
@@ -43,16 +75,30 @@ class GestureRecognitionPipeline:
             landmark_list = calc_landmark_list(debug_image, hand_landmarks)
             pre_processed_landmark_list = pre_process_landmark(landmark_list)
 
-            hand_sign_id = self.classifier(pre_processed_landmark_list)
+            hand_sign_id, confidence, probabilities = (
+                self.classifier.predict_with_confidence(pre_processed_landmark_list)
+            )
             label = self._label_for_id(hand_sign_id)
             handedness_label = handedness.classification[0].label
-            predictions.append(f"{handedness_label}: {label}")
+            prediction = GesturePrediction(
+                handedness=handedness_label,
+                label=label,
+                confidence=confidence,
+                probabilities=tuple(float(value) for value in probabilities),
+            )
+            predictions.append(prediction)
 
             debug_image = draw_bounding_rect(debug_image, brect)
             debug_image = draw_landmarks(debug_image, landmark_list)
-            debug_image = draw_info_text(debug_image, brect, handedness, label)
+            debug_image = draw_info_text(
+                debug_image,
+                brect,
+                handedness,
+                f"{label} {confidence:.0%}",
+            )
 
-        return debug_image, " | ".join(predictions)
+        message = " | ".join(prediction.display_text for prediction in predictions)
+        return PipelineResult(debug_image, tuple(predictions), message)
 
     def _label_for_id(self, hand_sign_id):
         if 0 <= hand_sign_id < len(self.labels):
