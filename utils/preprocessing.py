@@ -1,21 +1,22 @@
 import copy
 import itertools
 
-import cv2 as cv
-import numpy as np
-
 
 def calc_bounding_rect(image, landmarks):
     image_width, image_height = image.shape[1], image.shape[0]
-    landmark_array = np.empty((0, 2), int)
+    landmark_points = []
 
     for landmark in landmarks.landmark:
         landmark_x = min(int(landmark.x * image_width), image_width - 1)
         landmark_y = min(int(landmark.y * image_height), image_height - 1)
-        landmark_array = np.append(landmark_array, [[landmark_x, landmark_y]], axis=0)
+        landmark_points.append((landmark_x, landmark_y))
 
-    x, y, w, h = cv.boundingRect(landmark_array)
-    return [x, y, x + w, y + h]
+    if not landmark_points:
+        return [0, 0, 0, 0]
+
+    x_values = [point[0] for point in landmark_points]
+    y_values = [point[1] for point in landmark_points]
+    return [min(x_values), min(y_values), max(x_values) + 1, max(y_values) + 1]
 
 
 def calc_landmark_list(image, landmarks):

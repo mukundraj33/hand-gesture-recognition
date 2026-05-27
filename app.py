@@ -1,9 +1,10 @@
 import threading
+from io import BytesIO
 
 import av
-import cv2 as cv
 import numpy as np
 import streamlit as st
+from PIL import Image
 from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, webrtc_streamer
 
 from utils.pipeline import GestureRecognitionPipeline
@@ -47,8 +48,7 @@ class GestureVideoProcessor(VideoProcessorBase):
         self.latest_probabilities = ()
 
     def recv(self, frame):
-        bgr_frame = frame.to_ndarray(format="bgr24")
-        rgb_frame = cv.cvtColor(bgr_frame, cv.COLOR_BGR2RGB)
+        rgb_frame = frame.to_ndarray(format="rgb24")
 
         try:
             result = self.pipeline.process(rgb_frame)
@@ -74,8 +74,7 @@ class GestureVideoProcessor(VideoProcessorBase):
                 self.latest_confidence = 0.0
                 self.latest_probabilities = ()
 
-        annotated_bgr = cv.cvtColor(annotated_rgb, cv.COLOR_RGB2BGR)
-        return av.VideoFrame.from_ndarray(annotated_bgr, format="bgr24")
+        return av.VideoFrame.from_ndarray(annotated_rgb, format="rgb24")
 
 
 def render_styles():
@@ -226,14 +225,13 @@ def render_snapshot_mode():
             st.info("Capture or upload an image to run snapshot inference.")
         return
 
-    file_bytes = np.asarray(bytearray(image_source.read()), dtype=np.uint8)
-    bgr_image = cv.imdecode(file_bytes, cv.IMREAD_COLOR)
-    if bgr_image is None:
+    try:
+        pil_image = Image.open(BytesIO(image_source.read())).convert("RGB")
+        rgb_image = np.asarray(pil_image, dtype=np.uint8)
+    except Exception:
         with output_col:
             st.error("Could not decode the selected image.")
         return
-
-    rgb_image = cv.cvtColor(bgr_image, cv.COLOR_BGR2RGB)
 
     try:
         result = load_pipeline().process(rgb_image)
@@ -309,7 +307,7 @@ def render_architecture():
 def render_footer():
     st.divider()
     st.caption(
-        "Built with Streamlit, streamlit-webrtc, MediaPipe Hands, OpenCV, "
+        "Built with Streamlit, streamlit-webrtc, MediaPipe Hands, "
         "TensorFlow/Keras, and NumPy."
     )
 
