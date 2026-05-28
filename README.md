@@ -1,131 +1,153 @@
-# Hand Gesture Recognition System
+---
+title: Hand Gesture Recognition
+sdk: streamlit
+app_file: app.py
+python_version: "3.13"
+---
 
-## Project Overview
-This real-time hand gesture recognition system identifies 8 distinct hand gestures using MediaPipe for landmark detection and a custom deep learning model for classification. The model achieves **93% accuracy** on the test set, demonstrating robust performance in recognizing complex hand gestures.
+# Hand Gesture Recognition
 
-## Recognized Gestures
-| Gesture        | Description                                  |
-|----------------|----------------------------------------------|
-| 0 Open Hand    | Palm fully open with fingers extended        |
-| 1 Close Hand     | Fingers curled into a fist                   |
-| 2 Pointer        | Index finger extended, others curled         |
-| 3 OK             | Thumb and index finger forming a circle      |
-| 4 Rock           | Index and pinky fingers extended             |
-| 5 Good Luck      | Index and middle finger curled       |
-| 6 Dislike        | Thumb pointing downward                      |
-| 7 Like           | Thumb pointing upward                        |
+A professional Streamlit web application for real-time hand gesture recognition. The app uses browser webcam input, MediaPipe Hands landmark detection, and the existing TensorFlow/Keras keypoint classifier to identify eight trained gestures.
 
-## Technologies Used
-- **Python 3.9+**: Primary programming language
-- **MediaPipe**: Hand landmark detection
-- **OpenCV**: Video processing and camera operations
-- **TensorFlow/Keras**: Deep learning model development
-- **scikit-learn**: Data processing and evaluation
+## Features
 
-## Key Skills Demonstrated
-- Deep learning model design and training
-- Real-time computer vision pipeline implementation
-- MediaPipe integration for hand tracking
-- Data collection and preprocessing for gesture recognition
-- Model optimization and evaluation
+- Browser webcam support through `streamlit-webrtc`
+- Real-time MediaPipe hand landmark detection
+- 21-point hand skeleton drawing on processed frames
+- Existing preprocessing pipeline preserved exactly
+- TensorFlow/Keras model inference without retraining
+- Gesture label and confidence display
+- Snapshot mode for image upload or browser camera capture
+- Streamlit Community Cloud ready configuration
 
+## Supported Gestures
 
-## Model Architecture
-```python
-model = tf.keras.models.Sequential([
-    tf.keras.layers.Input((21 * 2, )),   # 42 input features
-    tf.keras.layers.Dropout(0.2),        # Regularization
-    tf.keras.layers.Dense(20, activation='relu'),
-    tf.keras.layers.Dropout(0.4),
-    tf.keras.layers.Dense(10, activation='relu'),
-    tf.keras.layers.Dense(8, activation='softmax')  # 8 output classes
-])
+| Class | Gesture |
+| --- | --- |
+| 0 | Open hand |
+| 1 | Close hand |
+| 2 | Pointer |
+| 3 | OK |
+| 4 | Rock |
+| 5 | Good luck |
+| 6 | Dislike |
+| 7 | Like |
 
-Performance Metrics:
-Accuracy: 93%
-Precision: 94%
-Recall: 93%
-F1-Score: 93%
+## Architecture
 
-Classification Report:
-              precision    recall  f1-score   support
-
-           0       0.99      0.76      0.86       152
-           1       0.96      0.86      0.91       317
-           2       0.91      0.97      0.94       203
-           3       0.88      1.00      0.94       176
-           4       0.99      0.94      0.96       257
-           5       0.95      0.96      0.96       284
-           6       0.87      0.99      0.93       174
-           7       0.90      1.00      0.95       148
-
-    accuracy                           0.93      1711
-   macro avg       0.93      0.93      0.93      1711
-weighted avg       0.94      0.93      0.93      1711
+```text
+Browser webcam frame
+  -> streamlit-webrtc frame processor
+  -> RGB conversion
+  -> MediaPipe Hands detection
+  -> 21 landmark coordinate extraction
+  -> wrist-relative landmark normalization
+  -> TensorFlow/Keras keypoint classifier
+  -> gesture label, confidence, and annotated frame
 ```
 
-## Usage Instructions
+The ML behavior is implemented in reusable modules:
 
-### Keyboard Controls
-| Key       | Functionality                                 |
-|-----------|-----------------------------------------------|
-| **0-7**   | Select gesture for data collection:<br>0 = Open Hand, 1 = Close Hand,<br>2 = Pointer, 3 = OK,<br>4 = Rock, 5 = Good Luck,<br>6 = Dislike, 7 = Like |
-| **k**     | Enter logging mode (data collection)          |
-| **n**     | Return to normal recognition mode             |
-| **ESC**   | Exit application                              |
+- `utils/mediapipe_detector.py`: MediaPipe Hands wrapper with Python 3.13 MediaPipe Tasks support
+- `utils/preprocessing.py`: bounding box, landmark extraction, and landmark normalization
+- `utils/pipeline.py`: end-to-end prediction pipeline
+- `model/keypoint_classifier/keypoint_classifier.py`: Keras model loading and inference
+- `model/keypoint_classifier/keypoint_classifier_label.csv`: label mapping
+- `assets/hand_landmarker.task`: MediaPipe hand landmark detector asset for Python 3.13
 
-### Data Collection Workflow
-1. **Enter Logging Mode**  
-   Press the `k` key to enter data collection mode
-   
-2. **Select Gesture Class**  
-   Press a number key (0-7) corresponding to the gesture you want to record:
-   - 0: Open Hand
-   - 1: Close Hand
-   - 2: Pointer
-   - 3: OK
-   - 4: Rock
-   - 5: Good Luck
-   - 6: Dislike
-   - 7: Like
+## Project Structure
 
-3. **Perform Gesture**  
-   Show the selected hand gesture to the camera. The system will automatically record landmark data.
+```text
+hand-gesture-recognition/
+|-- app.py
+|-- README.md
+|-- requirements.txt
+|-- runtime.txt
+|-- .streamlit/
+|   `-- config.toml
+|-- assets/
+|   `-- hand_landmarker.task
+|-- model/
+|   |-- __init__.py
+|   `-- keypoint_classifier/
+|       |-- keypoint_classifier.py
+|       |-- keypoint_classifier.keras
+|       |-- keypoint_classifier_label.csv
+|       `-- keypoint.csv
+`-- utils/
+    |-- config.py
+    |-- drawing.py
+    |-- labels.py
+    |-- mediapipe_detector.py
+    |-- pipeline.py
+    `-- preprocessing.py
+```
 
-4. **Collect Multiple Samples**  
-   For best results:
-   - Perform each gesture from different angles
-   - Vary hand positions within frame
-   - Repeat 20-30 times per gesture
-   - Switch between gestures using number keys
+## Local Installation
 
-5. **Finish Collection**  
-   Press `n` to exit logging mode when done
+Use Python 3.13.
 
-6. **Retrain Model**  
-   Use the collected data to retrain the model: keypoint_classification.ipynb
-   ```bash
-## Deployment
-- **Android**: Convert model to TensorFlow Lite:
-  ```bash
-    import tensorflow as tf
-    model = tf.keras.models.load_model('model/keypoint_classifier.keras')
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    tflite_model = converter.convert()
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-    with open('model/keypoint_classifier.tflite', 'wb') as f:
-    f.write(tflite_model)
-    
-- **Web**: Convert to TensorFlow.js
+On macOS or Linux:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Open the local URL shown by Streamlit, allow browser camera access, and start the live recognition stream.
+
+## Streamlit Community Cloud Deployment
+
+1. Push this repository to GitHub.
+2. Go to Streamlit Community Cloud.
+3. Select **New app**.
+4. Choose the repository and branch.
+5. Set the main file path to `app.py`.
+6. Confirm Python 3.13 is selected through `runtime.txt`.
+7. Deploy.
+
+No secrets are required for this project.
+
+## Deployment Notes
+
+- The app does not use `cv2.VideoCapture(0)`.
+- Webcam access is handled by the browser through WebRTC.
+- The classifier model file must remain at `model/keypoint_classifier/keypoint_classifier.keras`.
+- Labels must remain at `model/keypoint_classifier/keypoint_classifier_label.csv`.
+- Python 3.13 uses MediaPipe Tasks with `assets/hand_landmarker.task`.
+- If webcam permission is blocked, reset site permissions in the browser and reload the app.
+- If MediaPipe fails to install, confirm the deployment runtime is Python 3.13.
+
+## Screenshots
+
+Add screenshots after deployment:
+
+- `assets/live-recognition.png`
+- `assets/snapshot-inference.png`
+- `assets/confidence-scores.png`
+
+## Tech Stack
+
+- Streamlit
+- streamlit-webrtc
+- MediaPipe Hands / MediaPipe Tasks
+- OpenCV
+- TensorFlow/Keras
+- NumPy
 
 ## Future Improvements
-- **3D Gesture Recognition**  
-  Integrate depth cameras for spatial gesture analysis
-- **Sign Language Sequences**  
-  Implement LSTM networks for continuous gesture recognition
-- **Gesture Trajectory Analysis**  
-  Incorporate movement velocity and path recognition
-- **Real-Time Translation**  
-  Add sign language to text/speech conversion
-- **Gesture Security**  
-  Develop authentication systems using unique gesture patterns
+
+- Add temporal smoothing across frame predictions
+- Add optional confidence threshold filtering
+- Add gesture history charts
+- Add mobile-specific layout tuning
+- Add model cards and dataset documentation

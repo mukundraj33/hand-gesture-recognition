@@ -1,328 +1,347 @@
-import cv2 as cv
+import threading
+from io import BytesIO
+
+import av
 import numpy as np
-import mediapipe as mp
+import streamlit as st
+from PIL import Image
+from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, webrtc_streamer
 
-import csv
-import copy
-import argparse
-import itertools
-from collections import deque
-
-from utils import CvFpsCalc
-from model import KeyPointClassifier
+from utils.pipeline import GestureRecognitionPipeline
 
 
-def get_args():
-    """
-    Parse command line arguments for camera configuration and model parameters.
-    Returns parsed arguments object.
-    """
-    parser = argparse.ArgumentParser()
+GESTURE_DESCRIPTIONS = {
+    "Open hand": "Palm open with all fingers extended.",
+    "Close hand": "Closed fist with fingers curled inward.",
+    "Pointer": "Index finger extended for pointing.",
+    "OK": "Thumb and index finger forming an OK sign.",
+    "Rock": "Index and little finger extended.",
+    "Good luck": "Gesture class trained as Good luck.",
+    "Dislike": "Thumb-down gesture.",
+    "Like": "Thumb-up gesture.",
+}
 
-    # Camera configuration arguments
-    parser.add_argument("--device", type=int, default=0, 
-                        help="Camera device index (default=0)")
-    parser.add_argument("--width", type=int, default=960,
-                        help="Capture frame width (default=960)")
-    parser.add_argument("--height", type=int, default=540,
-                        help="Capture frame height (default=540)")
-    
-    # MediaPipe Hands model parameters
-    parser.add_argument('--use_static_image_mode', action='store_true',
-                        help="Use static image mode for MediaPipe")
-    parser.add_argument("--min_detection_confidence", type=float, default=0.7,
-                        help="Minimum detection confidence threshold")
-    parser.add_argument("--min_tracking_confidence", type=int, default=0.5,
-                        help="Minimum tracking confidence threshold")
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
-    return parser.parse_args()
+
+st.set_page_config(
+    page_title="Hand Gesture Recognition",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+@st.cache_resource(show_spinner="Loading MediaPipe and TensorFlow model...")
+def load_pipeline():
+    return GestureRecognitionPipeline()
+
+
+class GestureVideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.pipeline = load_pipeline()
+        self.lock = threading.Lock()
+        self.latest_message = "Waiting for webcam frames"
+        self.latest_label = "No prediction"
+        self.latest_confidence = 0.0
+        self.latest_probabilities = ()
+
+    def recv(self, frame):
+        rgb_frame = frame.to_ndarray(format="rgb24")
+
+        try:
+            result = self.pipeline.process(rgb_frame)
+            annotated_rgb = result.image if result.image is not None else rgb_frame
+            primary_prediction = result.primary_prediction
+
+            with self.lock:
+                self.latest_message = result.message
+                if primary_prediction:
+                    self.latest_label = primary_prediction.label
+                    self.latest_confidence = primary_prediction.confidence
+                    self.latest_probabilities = primary_prediction.probabilities
+                else:
+                    self.latest_label = result.message
+                    self.latest_confidence = 0.0
+                    self.latest_probabilities = ()
+
+        except Exception as exc:
+            annotated_rgb = rgb_frame
+            with self.lock:
+                self.latest_message = f"Frame processing error: {exc}"
+                self.latest_label = "Processing error"
+                self.latest_confidence = 0.0
+                self.latest_probabilities = ()
+
+        return av.VideoFrame.from_ndarray(annotated_rgb, format="rgb24")
+
+
+def render_styles():
+    st.markdown(
+        """
+        <style>
+            .main .block-container {
+                padding-top: 2rem;
+                padding-bottom: 2rem;
+                max-width: 1240px;
+            }
+            .metric-card {
+                border: 1px solid #d9e2ec;
+                border-radius: 8px;
+                padding: 1rem;
+                background: #ffffff;
+                min-height: 112px;
+            }
+            .section-panel {
+                border: 1px solid #d9e2ec;
+                border-radius: 8px;
+                padding: 1rem 1.1rem;
+                background: #fbfcfe;
+            }
+            .gesture-chip {
+                display: inline-block;
+                margin: 0.18rem 0.28rem 0.18rem 0;
+                padding: 0.32rem 0.55rem;
+                border: 1px solid #c8d3df;
+                border-radius: 999px;
+                background: #ffffff;
+                color: #102a43;
+                font-size: 0.92rem;
+            }
+            footer {visibility: hidden;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar():
+    with st.sidebar:
+        st.header("Controls")
+        st.caption("Use a well-lit scene and keep one hand clearly visible.")
+        confidence_floor = st.slider(
+            "Confidence reference",
+            min_value=0,
+            max_value=100,
+            value=70,
+            step=5,
+            help="Visual reference only. The model prediction itself is unchanged.",
+        )
+        prefer_front_camera = st.toggle(
+            "Prefer front camera",
+            value=False,
+            help="Requests the browser's user-facing camera when available.",
+        )
+
+        st.divider()
+        st.header("Model")
+        st.write("Input: 21 hand landmarks")
+        st.write("Features: 42 normalized values")
+        st.write("Classifier: TensorFlow/Keras")
+        st.write("Detector: MediaPipe Hands")
+
+        st.divider()
+        st.caption("No frames are stored by this app.")
+
+    return confidence_floor, prefer_front_camera
+
+
+def render_header():
+    st.title("Hand Gesture Recognition")
+    st.markdown(
+        "A Streamlit application for browser-based hand gesture recognition using "
+        "MediaPipe landmarks and the existing TensorFlow/Keras classifier."
+    )
+
+
+def render_live_webcam(confidence_floor, prefer_front_camera):
+    st.subheader("Live Webcam")
+    st.write(
+        "Start the webcam stream and show a supported gesture. Landmarks, bounding "
+        "boxes, predicted label, and confidence are drawn directly on the live video."
+    )
+
+    media_stream_constraints = {
+        "video": {"width": {"ideal": 960}, "height": {"ideal": 540}},
+        "audio": False,
+    }
+    if prefer_front_camera:
+        media_stream_constraints["video"]["facingMode"] = "user"
+
+    ctx = webrtc_streamer(
+        key="gesture-recognition-live",
+        video_processor_factory=GestureVideoProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints=media_stream_constraints,
+        async_processing=True,
+    )
+
+    status_col, confidence_col = st.columns([1, 1])
+    with status_col:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Current Gesture", "Live overlay")
+        if ctx.video_processor:
+            with ctx.video_processor.lock:
+                st.caption(ctx.video_processor.latest_message)
+        else:
+            st.caption("Webcam is not running.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with confidence_col:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        confidence_value = 0.0
+        if ctx.video_processor:
+            with ctx.video_processor.lock:
+                confidence_value = ctx.video_processor.latest_confidence
+        st.metric("Confidence", f"{confidence_value * 100:.1f}%")
+        st.progress(min(max(confidence_value, 0.0), 1.0))
+        if confidence_value and confidence_value * 100 < confidence_floor:
+            st.caption("Below the sidebar reference threshold.")
+        else:
+            st.caption("Reference threshold is for display only.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_snapshot_mode():
+    st.subheader("Snapshot Test")
+    st.write(
+        "Use this section for a single browser camera capture or uploaded image. "
+        "It is useful for checking exact confidence scores and class probabilities."
+    )
+
+    input_col, output_col = st.columns([1, 1])
+    with input_col:
+        camera_image = st.camera_input("Capture a hand gesture")
+        uploaded_image = st.file_uploader(
+            "Or upload an image",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=False,
+        )
+
+    image_source = camera_image or uploaded_image
+    if image_source is None:
+        with output_col:
+            st.info("Capture or upload an image to run snapshot inference.")
+        return
+
+    try:
+        pil_image = Image.open(BytesIO(image_source.read())).convert("RGB")
+        rgb_image = np.asarray(pil_image, dtype=np.uint8)
+    except Exception:
+        with output_col:
+            st.error("Could not decode the selected image.")
+        return
+
+    try:
+        result = load_pipeline().process(rgb_image)
+    except Exception as exc:
+        with output_col:
+            st.error(f"Model inference failed: {exc}")
+        return
+
+    with output_col:
+        st.image(result.image, caption="Annotated result", use_column_width=True)
+        if not result.has_hand:
+            st.warning(result.message)
+            return
+
+        primary_prediction = result.primary_prediction
+        st.success(result.message)
+        st.metric("Top Prediction", primary_prediction.label)
+        st.metric("Confidence", f"{primary_prediction.confidence * 100:.2f}%")
+
+        labels = load_pipeline().labels
+        probabilities = primary_prediction.probabilities
+        if probabilities:
+            score_rows = [
+                {"Gesture": label, "Confidence": probabilities[index]}
+                for index, label in enumerate(labels)
+                if index < len(probabilities)
+            ]
+            st.dataframe(score_rows, use_container_width=True, hide_index=True)
+
+
+def render_supported_gestures():
+    st.subheader("Supported Gestures")
+    chips = "".join(
+        f'<span class="gesture-chip">{gesture}</span>'
+        for gesture in GESTURE_DESCRIPTIONS
+    )
+    st.markdown(chips, unsafe_allow_html=True)
+
+    with st.expander("Gesture guide", expanded=False):
+        for gesture, description in GESTURE_DESCRIPTIONS.items():
+            st.write(f"**{gesture}:** {description}")
+
+
+def render_architecture():
+    st.subheader("Architecture")
+    left, right = st.columns([1, 1])
+
+    with left:
+        st.markdown(
+            """
+            <div class="section-panel">
+            <strong>Inference pipeline</strong><br>
+            Browser frame -> RGB conversion -> MediaPipe Hands -> 21 landmarks ->
+            wrist-relative normalization -> Keras classifier -> annotated frame
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with right:
+        st.markdown(
+            """
+            <div class="section-panel">
+            <strong>Deployment target</strong><br>
+            Streamlit Community Cloud or local Streamlit runtime with
+            streamlit-webrtc for browser webcam support.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_footer():
+    st.divider()
+    st.caption(
+        "Built with Streamlit, streamlit-webrtc, MediaPipe Hands, "
+        "TensorFlow/Keras, and NumPy."
+    )
 
 
 def main():
-    """Main function for hand gesture recognition pipeline."""
-    # Parse command line arguments
-    args = get_args()
-    
-    # Initialize camera with specified settings
-    cap = cv.VideoCapture(args.device)
-    cap.set(cv.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv.CAP_PROP_FRAME_HEIGHT, args.height)
+    render_styles()
+    confidence_floor, prefer_front_camera = render_sidebar()
+    render_header()
 
-    # Initialize MediaPipe Hands model
-    mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(
-        static_image_mode=args.use_static_image_mode,
-        max_num_hands=2,
-        min_detection_confidence=args.min_detection_confidence,
-        min_tracking_confidence=args.min_tracking_confidence,
+    try:
+        load_pipeline()
+    except Exception as exc:
+        st.error(
+            "The model or MediaPipe pipeline could not be loaded. "
+            f"Details: {exc}"
+        )
+        st.stop()
+
+    live_tab, snapshot_tab, details_tab = st.tabs(
+        ["Live Recognition", "Snapshot Inference", "Project Details"]
     )
 
-    # Initialize gesture classifier
-    keypoint_classifier = KeyPointClassifier()
-    
-    # Load gesture labels
-    with open('model/keypoint_classifier/keypoint_classifier_label.csv', 
-              encoding='utf-8-sig') as f:
-        keypoint_classifier_labels = [row[0] for row in csv.reader(f)]
+    with live_tab:
+        render_live_webcam(confidence_floor, prefer_front_camera)
 
-    # Initialize utilities
-    cvFpsCalc = CvFpsCalc(buffer_len=10)  # FPS calculator
-    point_history = deque(maxlen=16)       # Tracking point history
-    use_brect = True                       # Toggle bounding rectangle display
-    mode = 0                               # Current operation mode
+    with snapshot_tab:
+        render_snapshot_mode()
 
-    while True:
-        # Calculate and display FPS
-        fps = cvFpsCalc.get()
-        
-        # Process keyboard input
-        key = cv.waitKey(10)
-        if key == 27:  # ESC key to exit
-            break
-        number, mode = select_mode(key, mode)
+    with details_tab:
+        render_supported_gestures()
+        render_architecture()
 
-        # Read camera frame
-        ret, image = cap.read()
-        if not ret:
-            break
-        image = cv.flip(image, 1)  # Mirror display
-        debug_image = copy.deepcopy(image)  # Create copy for drawing
-
-        # Convert image to RGB format for MediaPipe
-        image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
-        image.flags.writeable = False
-        results = hands.process(image)  # Process frame with MediaPipe
-        image.flags.writeable = True
-
-        if results.multi_hand_landmarks:
-            # Process each detected hand
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
-                                                 results.multi_handedness):
-                # Calculate bounding box and landmarks
-                brect = calc_bounding_rect(debug_image, hand_landmarks)
-                landmark_list = calc_landmark_list(debug_image, hand_landmarks)
-
-                # Preprocess landmarks for classification
-                pre_processed_landmark_list = pre_process_landmark(landmark_list)
-                
-                # Log data if in recording mode
-                logging_csv(number, mode, pre_processed_landmark_list)
-
-                # Classify hand gesture
-                hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
-                
-                # Update tracking history
-                if hand_sign_id == "not applicable":
-                    point_history.append(landmark_list[8])  # Track index fingertip
-                else:
-                    point_history.append([0, 0])
-
-                # Draw annotations
-                debug_image = draw_bounding_rect(use_brect, debug_image, brect)
-                debug_image = draw_landmarks(debug_image, landmark_list)
-                debug_image = draw_info_text(
-                    debug_image,
-                    brect,
-                    handedness,
-                    keypoint_classifier_labels[hand_sign_id],
-                )
-        else:
-            point_history.append([0, 0])
-
-        # Draw tracking history and info overlay
-        debug_image = draw_point_history(debug_image, point_history)
-        debug_image = draw_info(debug_image, fps, mode, number)
-
-        # Display result
-        cv.imshow('Hand Gesture Recognition', debug_image)
-
-    # Cleanup
-    cap.release()
-    cv.destroyAllWindows()
+    render_footer()
 
 
-def select_mode(key, mode):
-    """
-    Process keyboard input to change operation mode or select gestures.
-    Returns:
-        number: Selected gesture ID (-1 if none selected)
-        mode: Current operation mode
-    """
-    number = -1
-    # Number keys 0-9
-    if 48 <= key <= 57:  # 0~9
-        number = key - 48
-    # Mode selection keys
-    if key == 110:  # 'n' - normal mode
-        mode = 0
-    if key == 107:  # 'k' - keypoint logging mode
-        mode = 1
-    return number, mode
-
-
-def calc_bounding_rect(image, landmarks):
-    """
-    Calculate bounding rectangle around hand landmarks.
-    Returns rectangle as [x_min, y_min, x_max, y_max]
-    """
-    image_width, image_height = image.shape[1], image.shape[0]
-    landmark_array = np.empty((0, 2), int)
-
-    # Convert normalized landmarks to pixel coordinates
-    for landmark in landmarks.landmark:
-        landmark_x = min(int(landmark.x * image_width), image_width - 1)
-        landmark_y = min(int(landmark.y * image_height), image_height - 1)
-        landmark_array = np.append(landmark_array, [[landmark_x, landmark_y]], axis=0)
-    
-    # Calculate bounding rectangle
-    x, y, w, h = cv.boundingRect(landmark_array)
-    return [x, y, x + w, y + h]
-
-
-def calc_landmark_list(image, landmarks):
-    """
-    Convert normalized landmarks to pixel coordinates in image space.
-    Returns list of [x, y] coordinates for each landmark.
-    """
-    image_width, image_height = image.shape[1], image.shape[0]
-    landmark_point = []
-
-    # Convert each landmark to image coordinates
-    for landmark in landmarks.landmark:
-        landmark_x = min(int(landmark.x * image_width), image_width - 1)
-        landmark_y = min(int(landmark.y * image_height), image_height - 1)
-        landmark_point.append([landmark_x, landmark_y])
-    
-    return landmark_point
-
-
-def pre_process_landmark(landmark_list):
-    """
-    Preprocess landmarks for classification:
-    1. Convert to relative coordinates
-    2. Flatten to 1D list
-    3. Normalize values
-    """
-    temp_landmark_list = copy.deepcopy(landmark_list)
-    
-    # Convert to relative coordinates based on wrist position
-    base_x, base_y = temp_landmark_list[0]
-    for i in range(len(temp_landmark_list)):
-        temp_landmark_list[i][0] -= base_x
-        temp_landmark_list[i][1] -= base_y
-    
-    # Flatten to 1D list
-    temp_landmark_list = list(itertools.chain.from_iterable(temp_landmark_list))
-    
-    # Normalize values by maximum absolute value
-    max_value = max(map(abs, temp_landmark_list))
-    return [n / max_value for n in temp_landmark_list]
-
-
-def logging_csv(number, mode, landmark_list):
-    """
-    Log landmark data to CSV file for training when in recording mode.
-    """
-    # Only log in mode 1 (keypoint logging) with valid number
-    if mode == 1 and (0 <= number <= 9):
-        with open('model/keypoint_classifier/keypoint.csv', 'a', newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([number, *landmark_list])
-
-
-def draw_landmarks(image, landmark_point):
-    """Draw hand landmarks and connections on the image."""
-    if len(landmark_point) == 0:
-        return image
-
-    # Define connections between landmarks (bones)
-    connections = [
-        # Thumb
-        (2, 3), (3, 4),
-        # Index finger
-        (5, 6), (6, 7), (7, 8),
-        # Middle finger
-        (9, 10), (10, 11), (11, 12),
-        # Ring finger
-        (13, 14), (14, 15), (15, 16),
-        # Little finger
-        (17, 18), (18, 19), (19, 20),
-        # Palm
-        (0, 1), (1, 2), (2, 5), (5, 9), 
-        (9, 13), (13, 17), (17, 0)
-    ]
-    
-    # Draw connections (bones)
-    for connection in connections:
-        start = tuple(landmark_point[connection[0]])
-        end = tuple(landmark_point[connection[1]])
-        # Draw thick black line and thin white line for contrast
-        cv.line(image, start, end, (0, 0, 0), 6)
-        cv.line(image, start, end, (255, 255, 255), 2)
-    
-    # Draw landmarks (joints)
-    for i, point in enumerate(landmark_point):
-        color = (255, 255, 255)  # Default white
-        radius = 5  # Default size
-        
-        # Special styling for fingertips
-        if i in [4, 8, 12, 16, 20]:  # Fingertips
-            radius = 8
-            cv.circle(image, tuple(point), radius, (0, 0, 0), 1)  # Black outline
-        
-        cv.circle(image, tuple(point), radius, color, -1)
-    
-    return image
-
-
-def draw_bounding_rect(use_brect, image, brect):
-    """Draw bounding rectangle around hand if enabled."""
-    if use_brect:
-        cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[3]),
-                     (0, 0, 0), 1)
-    return image
-
-
-def draw_info_text(image, brect, handedness, hand_sign_text):
-    """Draw information text above bounding box."""
-    # Draw background rectangle for text
-    cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[1] - 22),
-                 (0, 0, 0), -1)
-    
-    # Compose and display info text
-    info_text = f"{handedness.classification[0].label[0:]}: {hand_sign_text}"
-    cv.putText(image, info_text, (brect[0] + 5, brect[1] - 4),
-               cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
-    return image
-
-
-def draw_point_history(image, point_history):
-    """Draw trail of tracked point history (index finger path)."""
-    for i, point in enumerate(point_history):
-        if point[0] != 0 and point[1] != 0:
-            # Vary circle size based on position in history
-            cv.circle(image, tuple(point), 1 + int(i / 2), (152, 251, 152), 2)
-    return image
-
-
-def draw_info(image, fps, mode, number):
-    """Draw system information overlay in top-left corner."""
-    # FPS display
-    cv.putText(image, f"FPS: {fps}", (10, 30), cv.FONT_HERSHEY_SIMPLEX,
-               1.0, (0, 0, 0), 4, cv.LINE_AA)
-    cv.putText(image, f"FPS: {fps}", (10, 30), cv.FONT_HERSHEY_SIMPLEX,
-               1.0, (255, 255, 255), 2, cv.LINE_AA)
-    
-    # Mode information
-    mode_string = "Logging Key Point" if mode == 1 else "Normal Mode"
-    if mode == 1:
-        cv.putText(image, f"MODE: {mode_string}", (10, 90),
-                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
-        if 0 <= number <= 9:
-            cv.putText(image, f"NUM: {number}", (10, 110),
-                       cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
-    return image
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

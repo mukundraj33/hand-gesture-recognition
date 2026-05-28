@@ -1,17 +1,16 @@
 from collections import deque
-import cv2 as cv
+from time import perf_counter
 
 
 class CvFpsCalc(object):
     def __init__(self, buffer_len=1):
-        self._start_tick = cv.getTickCount()
-        self._freq = 1000.0 / cv.getTickFrequency()
+        self._start_time = perf_counter()
         self._difftimes = deque(maxlen=buffer_len)
 
     def get(self):
-        current_tick = cv.getTickCount()
-        different_time = (current_tick - self._start_tick) * self._freq
-        self._start_tick = current_tick
+        current_time = perf_counter()
+        different_time = (current_time - self._start_time) * 1000.0
+        self._start_time = current_time
 
         self._difftimes.append(different_time)
 
